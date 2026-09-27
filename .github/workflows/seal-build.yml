@@ -1,0 +1,108 @@
+name: Seal Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Optional Go test name regex passed to `go test -run`. Empty runs the full suite."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-2025
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Run Go tests
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            go test -v -run '${{ inputs.test-filter }}' ./lib/go/...
+          else
+            go test -v ./lib/go/...
+          fi
+
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Remove the sealed build workflow from the tree before zipping
+        shell: bash
+        run: |
+          rm -f "${GITHUB_WORKSPACE}/.github/workflows/seal-build.yml"
+          git -C "${GITHUB_WORKSPACE}" status --porcelain
+
+      - name: Create the module zip helper outside the repo checkout
+        shell: bash
+        run: |
+          mkdir -p /tmp/zipper /tmp/out
+          {
+            echo 'package main'
+            echo ''
+            echo 'import ('
+            echo '    "log"'
+            echo '    "os"'
+            echo ''
+            echo '    "golang.org/x/mod/module"'
+            echo '    "golang.org/x/mod/zip"'
+            echo ')'
+            echo ''
+            echo 'func main() {'
+            echo '    if len(os.Args) != 3 {'
+            echo '        log.Fatal("usage: zipper <repo-dir> <output-zip>")'
+            echo '    }'
+            echo '    f, err := os.Create(os.Args[2])'
+            echo '    if err != nil {'
+            echo '        log.Fatal(err)'
+            echo '    }'
+            echo '    defer f.Close()'
+            echo '    mv := module.Version{Path: "github.com/apache/thrift", Version: "v0.23.0"}'
+            echo '    if err := zip.CreateFromDir(f, mv, os.Args[1]); err != nil {'
+            echo '        log.Fatal(err)'
+            echo '    }'
+            echo '    log.Printf("created module zip: %s", os.Args[2])'
+            echo '}'
+          } > /tmp/zipper/main.go
+          cat /tmp/zipper/main.go
+          cd /tmp/zipper
+          go mod init sealsecurity.io/zipper
+          go get golang.org/x/mod@v0.24.0
+          go mod tidy
+
+      - name: Produce the module zip
+        shell: bash
+        run: |
+          cd /tmp/zipper
+          go run . "${GITHUB_WORKSPACE}" /tmp/out/v0.23.0.zip
+          ls -l /tmp/out/v0.23.0.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-module-zip
+          path: /tmp/out/v0.23.0.zip
+          if-no-files-found: error

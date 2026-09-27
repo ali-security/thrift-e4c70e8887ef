@@ -20,13 +20,13 @@
 name: "PyPI publishing"
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch: {}
 
 jobs:
   pypi-publish:
     name: Publish release to PyPI
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     # Specifying a GitHub environment is optional, but strongly encouraged
     environment: release
     permissions:

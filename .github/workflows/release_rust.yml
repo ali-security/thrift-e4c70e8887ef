@@ -20,14 +20,6 @@
 name: Release Rust Packages
 
 on:
-  push:
-    tags:
-      - "*"
-  pull_request:
-    branches:
-      - master
-    paths:
-      - ".github/workflows/release_rust.yml"
   workflow_dispatch:
 
 jobs:

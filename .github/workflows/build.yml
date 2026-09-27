@@ -1,10 +1,12 @@
 name: "Build"
 
+# Not dispatchable in the sealed build. This workflow's cross-language precross
+# jobs upload 43 files that share a basename across bundles -- five compiler legs
+# each publish `thrift`, and the java/kotlin/netstd bundles ship identical
+# third-party jars -- which the artifact harvester rejects as an ambiguous set.
+# The Go module artifact and its tests come from .travis.yml and seal-build.yml.
 on:
-  push:
-    branches: ["*"]
-  pull_request:
-    branches: ["*"]
+  workflow_call: {}
 
 env:
   BUILD_DEPS: automake bison flex git libboost-all-dev libevent-dev libssl-dev libtool make pkg-config
@@ -46,6 +48,7 @@ jobs:
           - ubuntu-24.04
       fail-fast: false
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -118,6 +121,7 @@ jobs:
         os: &macos_versions [macos-15-intel, macos-14, macos-15, macos-26]
       fail-fast: false
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -151,6 +155,7 @@ jobs:
   lib-php:
     needs: compiler
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       matrix:
         php-version: [7.1, 7.2, 7.3, 7.4, 8.0, 8.1, 8.2, 8.3, 8.4, 8.5]
@@ -204,6 +209,7 @@ jobs:
   lib-go:
     needs: compiler
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       matrix:
         go:
@@ -264,6 +270,7 @@ jobs:
   lib-java-kotlin:
     needs: compiler
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     env:
       GRADLE_VERSION: "8.4"
     steps:
@@ -373,6 +380,7 @@ jobs:
   lib-netstd:
     needs: compiler
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       fail-fast: false
     defaults:
@@ -564,6 +572,7 @@ jobs:
   lib-python:
     needs: compiler
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       matrix:
         python-version: &python_versions ["3.10", "3.11", "3.12", "3.13", "3.14"]
@@ -643,6 +652,7 @@ jobs:
         python-version: *python_versions
       fail-fast: false
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -697,6 +707,7 @@ jobs:
   lib-nodejs:
     needs: compiler
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -744,6 +755,7 @@ jobs:
   lib-cpp:
     needs: compiler
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -809,6 +821,7 @@ jobs:
   lib-ruby:
     needs: compiler
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     name: lib-ruby (${{ matrix.ruby-version }}) ${{ matrix.skip-build-ext && 'noext' || '' }}
     strategy:
       matrix:
@@ -882,6 +895,7 @@ jobs:
       - lib-ruby
       - lib-nodejs
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       matrix:
         # swift is currently broken and no maintainers around -> see THRIFT-5864
