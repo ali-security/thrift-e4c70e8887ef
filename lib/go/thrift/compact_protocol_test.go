@@ -21,8 +21,68 @@ package thrift
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
+
+func TestCompactProtocolVarintRejectsOverlong(t *testing.T) {
+	// 11 continuation bytes (bit 7 set), no terminating byte
+	payload := bytes.Repeat([]byte{0x80}, 11)
+	trans := NewTMemoryBufferLen(len(payload))
+	trans.Write(payload)
+	p := NewTCompactProtocol(trans)
+	_, err := p.readVarint64()
+	if err == nil {
+		t.Fatal("expected error for varint over 10 bytes, got nil")
+	}
+}
+
+func TestCompactProtocolVarintAcceptsValid10Byte(t *testing.T) {
+	// 9 continuation bytes followed by a terminating byte
+	payload := append(bytes.Repeat([]byte{0x80}, 9), 0x01)
+	trans := NewTMemoryBufferLen(len(payload))
+	trans.Write(payload)
+	p := NewTCompactProtocol(trans)
+	_, err := p.readVarint64()
+	if err != nil {
+		t.Fatalf("unexpected error for valid 10-byte varint: %v", err)
+	}
+}
+
+// endlessContinuationReader yields continuation bytes forever, so an unbounded
+// varint decoder never terminates. It gives up loudly instead of hanging the
+// test binary.
+type endlessContinuationReader struct {
+	reads int
+}
+
+func (r *endlessContinuationReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	r.reads++
+	if r.reads > 10000 {
+		return 0, errors.New("varint decoder read past 10000 continuation bytes without terminating")
+	}
+	for i := range p {
+		p[i] = 0x80
+	}
+	return len(p), nil
+}
+
+func TestCompactProtocolVarintTerminatesOnEndlessStream(t *testing.T) {
+	reader := &endlessContinuationReader{}
+	p := NewTCompactProtocol(NewStreamTransportR(reader))
+	if _, err := p.readVarint64(); err == nil {
+		t.Fatal("expected error for endless continuation-byte stream, got nil")
+	}
+	if reader.reads == 0 {
+		t.Fatal("expected the decoder to read from the stream")
+	}
+	if reader.reads > 10000 {
+		t.Fatal("varint decoder did not stop reading the endless stream")
+	}
+}
 
 func TestReadWriteCompactProtocol(t *testing.T) {
 	ReadWriteProtocolTest(t, NewTCompactProtocolFactory())
