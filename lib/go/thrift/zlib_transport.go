@@ -22,8 +22,27 @@ package thrift
 import (
 	"compress/zlib"
 	"context"
+	"fmt"
 	"io"
 )
+
+// zlibMaxDecompressionRatio bounds how much larger the cumulative decompressed
+// output of a TZlibTransport may be than the number of compressed bytes it has
+// actually consumed from the underlying transport.
+//
+// The zlib transport is a raw compressed stream with no message framing, so it
+// cannot see message boundaries and therefore cannot reset a per-message byte
+// counter. Capping the cumulative decompressed size against MaxMessageSize (the
+// upstream fix) turns MaxMessageSize into a per-connection budget and breaks
+// legitimate long-lived connections that carry more than that in total. Instead
+// we bound the amplification *ratio*: a decompression bomb has a huge
+// decompressed:compressed ratio (DEFLATE's theoretical maximum is 1032:1),
+// whereas legitimate traffic's decompressed size grows in step with the
+// compressed bytes received. Rejecting only streams that sustain an implausibly
+// high ratio stops the bomb without a false positive on legitimate traffic of
+// any total size. 100:1 leaves ample headroom over real-world payloads while
+// still catching the near-1000:1 ratios that make a bomb effective.
+const zlibMaxDecompressionRatio = 100
 
 // TZlibTransportFactory is a factory for TZlibTransport instances
 type TZlibTransportFactory struct {
@@ -33,10 +52,29 @@ type TZlibTransportFactory struct {
 
 // TZlibTransport is a TTransport implementation that makes use of zlib compression.
 type TZlibTransport struct {
-	reader      io.ReadCloser
-	transport   TTransport
-	writer      *zlib.Writer
-	writeCloser io.Closer
+	reader          io.ReadCloser
+	transport       TTransport
+	writer          *zlib.Writer
+	writeCloser     io.Closer
+	conf            *TConfiguration
+	bytesRead       int64
+	compressedBytes int64
+}
+
+// zlibCountingReader wraps the underlying transport so TZlibTransport can count
+// the compressed bytes the zlib reader consumes and bound the decompression
+// amplification ratio. See zlibMaxDecompressionRatio.
+type zlibCountingReader struct {
+	transport io.Reader
+	trans     *TZlibTransport
+}
+
+func (r *zlibCountingReader) Read(p []byte) (int, error) {
+	n, err := r.transport.Read(p)
+	if n > 0 {
+		r.trans.compressedBytes += int64(n)
+	}
+	return n, err
 }
 
 // GetTransport constructs a new instance of NewTZlibTransport
@@ -79,6 +117,8 @@ func NewTZlibTransport(trans TTransport, level int) (*TZlibTransport, error) {
 // Close closes the reader and writer (flushing any unwritten data) and closes
 // the underlying transport.
 func (z *TZlibTransport) Close() error {
+	z.bytesRead = 0
+	z.compressedBytes = 0
 	if z.reader != nil {
 		if err := z.reader.Close(); err != nil {
 			return err
@@ -110,14 +150,32 @@ func (z *TZlibTransport) Open() error {
 
 func (z *TZlibTransport) Read(p []byte) (int, error) {
 	if z.reader == nil {
-		r, err := newZlibReader(z.transport)
+		r, err := newZlibReader(&zlibCountingReader{transport: z.transport, trans: z})
 		if err != nil {
 			return 0, NewTTransportExceptionFromError(err)
 		}
 		z.reader = r
 	}
 
-	return z.reader.Read(p)
+	n, err := z.reader.Read(p)
+	if n > 0 {
+		z.bytesRead += int64(n)
+		// Reject only streams that both exceed MaxMessageSize and sustain an
+		// implausibly high decompression ratio: that combination is a
+		// decompression bomb, not legitimate long-lived traffic. See
+		// zlibMaxDecompressionRatio.
+		if maxSize := int64(z.conf.GetMaxMessageSize()); z.bytesRead > maxSize &&
+			z.bytesRead > z.compressedBytes*zlibMaxDecompressionRatio {
+			return n, NewTProtocolExceptionWithType(
+				SIZE_LIMIT,
+				fmt.Errorf(
+					"decompressed size %d bytes exceeded limit for %d compressed bytes (ratio limit %d, max message size %d)",
+					z.bytesRead, z.compressedBytes, zlibMaxDecompressionRatio, maxSize,
+				),
+			)
+		}
+	}
+	return n, err
 }
 
 // RemainingBytes returns the size in bytes of the data that is still to be
@@ -132,6 +190,7 @@ func (z *TZlibTransport) Write(p []byte) (int, error) {
 
 // SetTConfiguration implements TConfigurationSetter for propagation.
 func (z *TZlibTransport) SetTConfiguration(conf *TConfiguration) {
+	z.conf = conf
 	PropagateTConfiguration(z.transport, conf)
 }
 
